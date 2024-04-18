@@ -29,7 +29,10 @@ uint64_t TCPSender::bytes_in_flight() const {return _bytes_in_flight;}
 
 void TCPSender::fill_window() {
     uint16_t window_size=_window_size?_window_size:1;
-    while(_window_size>_bytes_in_flight){
+    //if(window_size==1){
+    //    _timer.restart();
+    //}
+    while(window_size>_bytes_in_flight){
         TCPSegment tcpsegment;
         if(!is_sync_flag){
             //一开始发SYN包
@@ -78,21 +81,32 @@ void TCPSender::ack_received(const WrappingInt32 ackno, const uint16_t window_si
     uint64_t absolute_ackno=unwrap(ackno,_isn,_next_seqno);
     // 传入的 ACK 是不可靠的，直接丢弃
     if(absolute_ackno>_next_seqno)  return;
-
+    bool success=false;
     while(!_segments_in_flight.empty()){
         size_t segment_size=_segments_in_flight.front().second.length_in_sequence_space();
         if(_segments_in_flight.front().first+segment_size<=absolute_ackno){
             //删除已经收到的包
             _bytes_in_flight-=segment_size;
             _segments_in_flight.pop();
-            _timer.reset();
+            success=true;
         }else{
             break;
         }
     }
 
+    if(success){
+        _consecutive_retransmissions_count=0;
+        _timer.set_time_out(_initial_retransmission_timeout);
+        _timer.restart();
+    }
+    
+    if(_bytes_in_flight==0){
+        //如果已经没有未发送的包了，就停止计时器
+        _timer.set_time_out(_initial_retransmission_timeout);
+        _timer.stop();
+    }
+
     //最后将连续重传计数清零。
-    _consecutive_retransmissions_count=0;
     _window_size=window_size;
     fill_window();
 }

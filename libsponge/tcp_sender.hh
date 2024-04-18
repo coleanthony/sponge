@@ -19,7 +19,10 @@ class Timer{
     Timer()=default;
     Timer(uint32_t time_out): _time_count(0),_time_out(time_out),_is_running(false){}
     void start(){_is_running=true;}
-    void stop(){_is_running=false;}
+    void stop(){
+      _time_count=0;
+      _is_running=false;
+    }
     void reset(){_time_count=0;}
     void restart(){_is_running=true,_time_count=0;}
     bool is_running() {return _is_running;}
