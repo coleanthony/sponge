@@ -28,7 +28,7 @@ TCPSender::TCPSender(const size_t capacity, const uint16_t retx_timeout, const s
 uint64_t TCPSender::bytes_in_flight() const {return _bytes_in_flight;}
 
 void TCPSender::fill_window() {
-    uint16_t window_size=_window_size?_window_size:1;
+    uint16_t window_size = max(_window_size, static_cast<uint64_t>(1));
     //if(window_size==1){
     //    _timer.restart();
     //}
@@ -40,33 +40,34 @@ void TCPSender::fill_window() {
             tcpsegment.header().syn=true;
         }
         //目前还能放进的字节数量
-        size_t sendlen=min(TCPConfig::MAX_PAYLOAD_SIZE,(_stream.buffer_size(),window_size-_bytes_in_flight-tcpsegment.header().syn));
+        size_t sendlen=min(TCPConfig::MAX_PAYLOAD_SIZE,
+            min(_stream.buffer_size(),window_size-_bytes_in_flight-tcpsegment.header().syn));
         //读取字节数
         std::string ss=_stream.read(sendlen);
         //填充数据
         tcpsegment.payload()=Buffer(std::move(ss));
 
         //如果第一次到达FIN
-        if(!is_fin_flag&&tcpsegment.length_in_sequence_space()<window_size&&_stream.eof()){
+        if(!is_fin_flag&&tcpsegment.length_in_sequence_space()+_bytes_in_flight<window_size&&_stream.eof()){
             is_fin_flag=true;
             tcpsegment.header().fin=true;
         }
 
         //空包就不发送了
-        if(tcpsegment.length_in_sequence_space()==0){
+        uint64_t length=tcpsegment.length_in_sequence_space();
+        if(length==0){
             break;
         }
 
         tcpsegment.header().seqno=next_seqno();
+        _segments_out.push(tcpsegment);
         if(!_timer.is_running()){
             _timer.restart();
         }
-
         //发送到_segments_out，保存还在flight的到_segments_in_flight
-        _segments_out.push(tcpsegment);
-        _bytes_in_flight+=tcpsegment.length_in_sequence_space();
         _segments_in_flight.push(make_pair(_next_seqno,tcpsegment));
-        _next_seqno+=tcpsegment.length_in_sequence_space();
+        _bytes_in_flight+=length;
+        _next_seqno+=length;
     }
 }
 
@@ -78,13 +79,13 @@ void TCPSender::fill_window() {
 //! \param window_size The remote receiver's advertised window size
 void TCPSender::ack_received(const WrappingInt32 ackno, const uint16_t window_size) {
     //首先将收到的 ackno 转化为 absolute ackno ，便于后续处理已经收到的包
-    uint64_t absolute_ackno=unwrap(ackno,_isn,_next_seqno);
+    uint64_t absolute_ackno=unwrap(ackno,_isn,next_seqno_absolute());
     // 传入的 ACK 是不可靠的，直接丢弃
-    if(absolute_ackno>_next_seqno)  return;
+    if(absolute_ackno>next_seqno_absolute())  return;
     bool success=false;
     while(!_segments_in_flight.empty()){
         size_t segment_size=_segments_in_flight.front().second.length_in_sequence_space();
-        if(_segments_in_flight.front().first+segment_size<=absolute_ackno){
+        if(_segments_in_flight.front().first+segment_size-1<absolute_ackno){
             //删除已经收到的包
             _bytes_in_flight-=segment_size;
             _segments_in_flight.pop();
@@ -102,7 +103,7 @@ void TCPSender::ack_received(const WrappingInt32 ackno, const uint16_t window_si
     
     if(_bytes_in_flight==0){
         //如果已经没有未发送的包了，就停止计时器
-        _timer.set_time_out(_initial_retransmission_timeout);
+        //_timer.set_time_out(_initial_retransmission_timeout);
         _timer.stop();
     }
 

@@ -26,8 +26,8 @@ void TCPReceiver::segment_received(const TCPSegment &seg) {
         _isn=header.seqno;
     }
     //syn_recv阶段
-    uint64_t checkpoint=_reassembler.stream_out().bytes_written()+1;
-    uint64_t abs_no=unwrap(header.seqno,_isn,checkpoint);
+    uint64_t checkpoint=_reassembler.stream_out().bytes_written();
+    uint64_t abs_no=unwrap(header.seqno,_isn.value(),checkpoint);
     uint64_t seqnum=abs_no-1+header.syn;
     _reassembler.push_substring(seg.payload().copy(),seqnum,header.fin);
 }
@@ -37,7 +37,7 @@ std::optional<WrappingInt32> TCPReceiver::ackno() const {
         return std::nullopt;
     }
     //第一个没有收到的，所以+1，fin标志位+1
-    return wrap(_reassembler.stream_out().bytes_written()+1+_reassembler.stream_out().input_ended(), _isn);
+    return wrap(_reassembler.stream_out().bytes_written()+1+_reassembler.stream_out().input_ended(), _isn.value());
 }
 
 size_t TCPReceiver::window_size() const {
