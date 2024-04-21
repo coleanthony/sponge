@@ -44,7 +44,7 @@ void NetworkInterface::send_datagram(const InternetDatagram &dgram, const Addres
     } else {
         //If the destination Ethernet address is unknown, broadcast an ARP request for the next hop’s Ethernet address, 
         //and queue the IP datagram so it can be sent after the ARP reply is received.
-        if(!_datagram_to_send.count(next_hop_ip)){
+        if(!_arp_timer.count(next_hop_ip)){
             //if it's not in the _datagram_to_send, add it.
             ARPMessage arp_request;
             arp_request.opcode = ARPMessage::OPCODE_REQUEST;
@@ -60,10 +60,9 @@ void NetworkInterface::send_datagram(const InternetDatagram &dgram, const Addres
             _frames_out.push(arp_request_frame);
 
             //queue the datagram
-            _datagram_to_send[next_hop_ip].push_back(dgram);
-
+            _arp_timer[next_hop_ip]=ARP_RESPONSE_TTL_MS;
         }
-        
+        _datagram_to_send[next_hop_ip].push_back(dgram);
     }
     
 }
@@ -76,31 +75,31 @@ std::optional<InternetDatagram> NetworkInterface::recv_frame(const EthernetFrame
     //if it's ipv4, parse it and return
     if(frame.header().type==EthernetHeader::TYPE_IPv4){
         InternetDatagram ipv4_datagram;
-        if(ipv4_datagram.parse(frame.header().payload)==NoError)    return ipv4_datagram;
+        if(ipv4_datagram.parse(frame.payload())==ParseResult::NoError)    return ipv4_datagram;
         return nullopt;
     }
 
     //if it's arp
     if(frame.header().type==EthernetHeader::TYPE_ARP){
         ARPMessage arp_message;
-        if(arp_message.parse(frame.header().payload)!=NoError)    return nullopt;
+        if(arp_message.parse(frame.payload())!=ParseResult::NoError)    return nullopt;
 
-        uint32_t cur_ip_addr=ip_address().ipv4_numeric();
+        uint32_t cur_ip_addr=_ip_address.ipv4_numeric();
         //arp request
-        if(arp_message.op==ARPMessage::OPCODE_REQUEST&&arp_message.target_ip_addr==cur_ip_addr){
+        if(arp_message.opcode==ARPMessage::OPCODE_REQUEST&&arp_message.target_ip_address==cur_ip_addr){
             //make arp_reply
             ARPMessage arp_reply;
-            arp_reply.op=ARPMessage::OPCODE_REPLY;
+            arp_reply.opcode=ARPMessage::OPCODE_REPLY;
             arp_reply.sender_ethernet_address=_ethernet_address;
             arp_reply.sender_ip_address=cur_ip_addr;
             arp_reply.target_ethernet_address=arp_message.sender_ethernet_address;
             arp_reply.target_ip_address=arp_message.sender_ip_address;
             //send
             EthernetFrame arp_reply_frame;
-            arp_request_frame.header().dst = arp_message.sender_ethernet_address;
-            arp_request_frame.header().src = _ethernet_address; 
-            arp_request_frame.header().type = EthernetHeader::TYPE_ARP;
-            arp_request_frame.payload() = arp_reply.serialize();
+            arp_reply_frame.header().dst = arp_message.sender_ethernet_address;
+            arp_reply_frame.header().src = _ethernet_address; 
+            arp_reply_frame.header().type = EthernetHeader::TYPE_ARP;
+            arp_reply_frame.payload() = arp_reply.serialize();
             _frames_out.push(arp_reply_frame);
         }
 
@@ -109,12 +108,12 @@ std::optional<InternetDatagram> NetworkInterface::recv_frame(const EthernetFrame
         //send the InternetDatagram in _datagram_to_send
         if(_datagram_to_send.count(arp_message.sender_ip_address)){
             for(auto &datagram: _datagram_to_send[arp_message.sender_ip_address]){
-                EthernetFrame frame;
-                frame.header().dst = arp_message.sender_ethernet_address
-                frame.header().src = _ethernet_address;
-                frame.header().type = EthernetHeader::TYPE_IPv4;
-                frame.payload() = datagram.serialize();
-                _frames_out.push(frame);
+                EthernetFrame send_frame;
+                send_frame.header().dst = arp_message.sender_ethernet_address;
+                send_frame.header().src = _ethernet_address;
+                send_frame.header().type = EthernetHeader::TYPE_IPv4;
+                send_frame.payload() = datagram.serialize();
+                _frames_out.push(send_frame);
             }
             _datagram_to_send.erase(arp_message.sender_ip_address);
         }
@@ -135,8 +134,10 @@ void NetworkInterface::tick(const size_t ms_since_last_tick) {
     }
     //udpate arp_repuest
     for(auto it=_arp_timer.begin();it!=_arp_timer.end();){
-        if(if->second<=ms_since_last_tick){
-            
+        if(it->second<=ms_since_last_tick){
+            uint32_t ip_addr=it->first;
+            it=_arp_timer.erase(it);
+            _datagram_to_send.erase(ip_addr);
         }else{
             it->second-=ms_since_last_tick;
             it++;

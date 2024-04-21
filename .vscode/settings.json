@@ -89,6 +89,8 @@
         "__tuple": "cpp",
         "ios": "cpp",
         "locale": "cpp",
-        "filesystem": "cpp"
+        "filesystem": "cpp",
+        "version": "cpp",
+        "*.inc": "cpp"
     }
 }
